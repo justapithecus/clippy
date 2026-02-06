@@ -188,8 +188,8 @@ Turns receive stable identifiers. See CONTRACT_REGISTRY.md.
 
 A turn's content can be:
 
-- Read from the session's turn buffer.
-- Written to the global relay buffer.
+- Read from the broker's per-session turn buffer.
+- Written to the broker's global relay buffer.
 - Injected into another session's PTY input.
 
 Relay MUST preserve byte content exactly. No transformation, wrapping,

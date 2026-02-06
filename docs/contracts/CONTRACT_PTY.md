@@ -113,9 +113,11 @@ The turn detector:
 
 When a completed turn is produced:
 
-- The wrapper stores it in the session's **latest-turn buffer**
-  (single slot, replaced on each new completed turn in v0).
-- The wrapper notifies the broker that a new turn is available.
+- The wrapper pushes the turn content to the broker via
+  `turn_completed` (CONTRACT_BROKER.md). The broker's session entry
+  holds the **authoritative copy**.
+- If the broker is unreachable, the wrapper MUST retain the latest
+  completed turn locally and send it on successful registration.
 
 The turn detector runs **in-process** with the wrapper. It MUST NOT
 introduce blocking I/O or unbounded memory growth in the output path.
@@ -151,8 +153,9 @@ introduce blocking I/O or unbounded memory growth in the output path.
 6. Begin I/O mediation and turn detection.
 
 If the broker is unreachable at spawn time, the wrapper MUST still
-run the child. Turn detection proceeds locally; turns are buffered
-but not relayable until broker registration succeeds.
+run the child. Turn detection proceeds locally. The wrapper retains
+only the most recent completed turn and sends it to the broker on
+successful registration (see CONTRACT_BROKER.md §Late registration).
 
 ### Running
 

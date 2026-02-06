@@ -149,6 +149,16 @@ Response: `status: "ok"` or error (duplicate session ID, etc.).
 
 On success, the broker adds an entry to the session table.
 
+### Late registration
+
+If a wrapper connects after already detecting completed turns
+(e.g., the broker was not running at session spawn), the wrapper
+SHOULD send a single `turn_completed` message with the most
+recent turn immediately after registration succeeds.
+
+Earlier turns are discarded. This is consistent with v0 single-slot
+semantics. In v1+, the wrapper MAY send multiple buffered turns.
+
 ### Deregister
 
 Sent by a wrapper during clean shutdown.
@@ -273,9 +283,12 @@ Semantics:
 1. The broker reads the relay buffer content.
 2. The broker sends an **inject command** to the target wrapper
    over its persistent connection.
-3. The wrapper writes the injected bytes to the child's PTY
-   master (indistinguishable from user input to the child).
-4. The broker responds to the hotkey client with success.
+3. The broker responds to the hotkey client with success.
+
+A `"ok"` response confirms that the inject command was **dispatched**
+to the wrapper. It does not confirm that the bytes were written to
+the child's PTY. Injection is fire-and-forget — the wrapper is
+trusted to write promptly per CONTRACT_PTY.md.
 
 Inject command (broker → wrapper, unsolicited):
 
@@ -287,6 +300,9 @@ Inject command (broker → wrapper, unsolicited):
 
 The wrapper MUST write the injected bytes to the child's PTY input
 promptly and without modification.
+
+No acknowledgment is sent. If the wrapper's connection drops before
+the inject is delivered, the broker reports `"session_disconnected"`.
 
 Error conditions:
 

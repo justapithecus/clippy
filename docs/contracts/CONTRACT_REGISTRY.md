@@ -234,7 +234,7 @@ Capture a specific turn (not just the latest) into the relay buffer.
 Request:
 
 | Field     | Type   | Description           |
-|-----------|--------|--------------------- -|
+|-----------|--------|---------------------|
 | `type`    | string | `"capture_by_id"`     |
 | `id`      | u32    | Request ID            |
 | `turn_id` | string | Turn ID to capture    |
@@ -302,7 +302,16 @@ Request:
 | `session` | string | Target session ID (for `inject` sink)|
 | `path`    | string | File path (for `file` sink)          |
 
-Fields are sink-dependent. Unneeded fields MAY be omitted.
+Required fields per sink:
+
+| Sink        | Required fields          | Optional fields |
+|-------------|--------------------------|-----------------|
+| `inject`    | `session`                | —               |
+| `clipboard` | —                        | —               |
+| `file`      | `path`                   | —               |
+
+Missing required fields for the target sink MUST produce an error
+with reason `"missing_field"`. Unrecognized fields are ignored.
 
 Response: `status: "ok"` or error.
 

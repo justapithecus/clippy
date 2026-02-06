@@ -63,6 +63,12 @@ client's event loop calls this method.
 
 **unregister** releases all grabs. Called on shutdown.
 
+Implementations MUST also expose a mechanism for efficient
+event-loop integration (e.g., a pollable file descriptor) so the
+hotkey client can block-wait without busy-polling. The specific
+mechanism is platform-dependent and not part of this interface
+contract — but the absence of one is a conformance failure.
+
 Errors during registration (conflicts, unsupported combos) are
 reported per-binding. Partial success is acceptable — the same
 rules from CONTRACT_HOTKEY.md apply.

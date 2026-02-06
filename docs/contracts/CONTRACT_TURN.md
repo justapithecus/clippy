@@ -87,6 +87,8 @@ clippy ships named presets for common agents:
 
 1. The pattern is tested against each **line** of output (after ANSI
    stripping). Multi-line prompt patterns are not supported in v0.
+   Patterns containing literal newlines MUST be rejected at
+   configuration time with a diagnostic.
 2. A match **anywhere in the line** constitutes a prompt detection.
 3. Consecutive prompt matches without intervening agent output
    MUST NOT produce empty turns.

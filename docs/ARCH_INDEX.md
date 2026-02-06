@@ -25,8 +25,18 @@ Do not update for internal refactors.
 Agent-facing documentation.
 
 - `ARCH_INDEX.md` — architectural navigation index
+- `workflow.md` — explanatory: operator plane vs artifact plane workflow
 
-Additional documents (contracts, plans) are added here as they become binding.
+### docs/contracts/
+
+Normative subsystem contracts. These define what must be true.
+
+- `CONTRACT_TURN.md` — turn object: core invariant, prompt-pattern detection, completeness
+- `CONTRACT_PTY.md` — PTY wrapper: I/O transparency, session lifecycle, signals
+- `CONTRACT_BROKER.md` — broker daemon: IPC protocol, session table, relay buffer
+- `CONTRACT_HOTKEY.md` — hotkey client: global hotkeys, X11 focus detection, actions
+- `CONTRACT_REGISTRY.md` — turn registry (v1): ring buffer, turn IDs, metadata, sinks
+- `CONTRACT_RESOLVER.md` — resolver abstraction (v2): platform adapter sub-interfaces
 
 ---
 

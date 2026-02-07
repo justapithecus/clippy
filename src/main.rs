@@ -37,9 +37,11 @@ async fn main() {
             capture_key,
             paste_key,
         } => {
-            tracing::info!(?capture_key, ?paste_key, "hotkey: not yet implemented");
-            eprintln!("clippyd hotkey: not yet implemented");
-            std::process::exit(1);
+            if let Err(e) = hotkey::run(capture_key, paste_key).await {
+                tracing::error!(error = %e, "hotkey failed");
+                eprintln!("clippyd hotkey: {e}");
+                std::process::exit(1);
+            }
         }
     }
 }

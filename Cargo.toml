@@ -15,8 +15,8 @@ serde = { version = "1", features = ["derive"] }
 serde_bytes = "0.11"
 rmp-serde = "1"
 regex = "1"
-nix = { version = "0.30", features = ["term", "signal", "process", "ioctl", "fs"] }
-x11rb = { version = "0.13", features = ["allow-unsafe-code"] }
+nix = { version = "0.30", features = ["term", "signal", "process", "ioctl", "fs", "poll"] }
+x11rb = "0.13"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4"] }

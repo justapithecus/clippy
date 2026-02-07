@@ -21,7 +21,15 @@ pub enum Command {
     },
 
     /// Run the broker daemon
-    Broker,
+    Broker {
+        /// Maximum number of turns retained per session
+        #[arg(long, default_value = "32")]
+        ring_depth: usize,
+
+        /// Maximum byte size per turn (content truncated beyond this)
+        #[arg(long, default_value = "4194304")]
+        max_turn_size: usize,
+    },
 
     /// Run the hotkey client
     Hotkey {

@@ -268,6 +268,7 @@ mod tests {
                 error: None,
                 size: Some(100),
                 sessions: None,
+                turn_id: None,
             },
         ];
 

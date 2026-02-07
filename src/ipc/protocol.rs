@@ -75,6 +75,8 @@ pub enum Message {
         size: Option<u32>,
         #[serde(skip_serializing_if = "Option::is_none")]
         sessions: Option<Vec<SessionDescriptor>>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        turn_id: Option<String>,
     },
 }
 
@@ -100,6 +102,17 @@ pub struct SessionDescriptor {
     pub session: String,
     pub pid: u32,
     pub has_turn: bool,
+}
+
+/// Turn descriptor returned in list_turns responses (metadata only, no content).
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TurnDescriptor {
+    pub turn_id: String,
+    pub timestamp: u64,
+    pub byte_length: u32,
+    pub interrupted: bool,
+    pub truncated: bool,
 }
 
 /// Protocol version for v0.
@@ -252,6 +265,7 @@ mod tests {
             error: None,
             size: None,
             sessions: None,
+            turn_id: None,
         };
         assert_eq!(round_trip(&msg), msg);
     }
@@ -264,6 +278,7 @@ mod tests {
             error: None,
             size: Some(1024),
             sessions: None,
+            turn_id: None,
         };
         assert_eq!(round_trip(&msg), msg);
     }
@@ -287,6 +302,7 @@ mod tests {
                     has_turn: false,
                 },
             ]),
+            turn_id: None,
         };
         assert_eq!(round_trip(&msg), msg);
     }
@@ -299,8 +315,36 @@ mod tests {
             error: Some("session_not_found".into()),
             size: None,
             sessions: None,
+            turn_id: None,
         };
         assert_eq!(round_trip(&msg), msg);
+    }
+
+    #[test]
+    fn response_with_turn_id_round_trip() {
+        let msg = Message::Response {
+            id: 3,
+            status: Status::Ok,
+            error: None,
+            size: Some(42),
+            sessions: None,
+            turn_id: Some("s1:5".into()),
+        };
+        assert_eq!(round_trip(&msg), msg);
+    }
+
+    #[test]
+    fn turn_descriptor_round_trip() {
+        let td = TurnDescriptor {
+            turn_id: "s1:1".into(),
+            timestamp: 1700000000000,
+            byte_length: 256,
+            interrupted: false,
+            truncated: false,
+        };
+        let encoded = rmp_serde::to_vec_named(&td).unwrap();
+        let decoded: TurnDescriptor = rmp_serde::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, td);
     }
 
     #[test]

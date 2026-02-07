@@ -13,6 +13,7 @@
 
 mod connection;
 mod handler;
+pub mod registry;
 pub mod state;
 
 use std::collections::HashMap;
@@ -61,7 +62,7 @@ pub enum BrokerError {
 /// - Stale socket detection and cleanup
 /// - SIGTERM/SIGINT → graceful shutdown, socket file removed
 /// - All state in-memory only (lost on exit)
-pub async fn run() -> Result<(), BrokerError> {
+pub async fn run(config: state::RingConfig) -> Result<(), BrokerError> {
     let socket_path = resolve_socket_path()?;
     let listener = bind_socket(&socket_path).await?;
 
@@ -74,7 +75,7 @@ pub async fn run() -> Result<(), BrokerError> {
     // Per-connection inject channels for paste → inject routing.
     let mut inject_senders: HashMap<ConnectionId, mpsc::UnboundedSender<Message>> = HashMap::new();
 
-    let mut state = BrokerState::new();
+    let mut state = BrokerState::new(config);
 
     // Graceful shutdown on SIGTERM or SIGINT.
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
@@ -279,7 +280,7 @@ mod tests {
             let (disconnect_tx, mut disconnect_rx) = mpsc::unbounded_channel::<DisconnectNotice>();
             let mut inject_senders: HashMap<ConnectionId, mpsc::UnboundedSender<Message>> =
                 HashMap::new();
-            let mut state = BrokerState::new();
+            let mut state = BrokerState::new(state::RingConfig::default());
 
             loop {
                 tokio::select! {

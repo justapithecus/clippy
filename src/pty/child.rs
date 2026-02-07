@@ -15,6 +15,7 @@ use nix::unistd::{ForkResult, Pid, execvp, fork, setsid};
 use super::PtyError;
 
 /// A spawned child process with its PTY master fd.
+#[derive(Debug)]
 pub struct ChildProcess {
     /// Child process PID.
     pub pid: Pid,
@@ -50,13 +51,15 @@ pub fn spawn_child(command: &[String], winsize: &Winsize) -> Result<ChildProcess
     .map_err(PtyError::PtyAlloc)?;
 
     // Prepare C strings for exec before forking (heap allocation).
+    // Reject any argument containing NUL bytes rather than silently
+    // dropping it (which would mutate the effective argv).
     let c_args: Vec<CString> = command
         .iter()
-        .filter_map(|s| CString::new(s.as_bytes()).ok())
-        .collect();
-    if c_args.is_empty() {
-        return Err(PtyError::Exec("command contains null bytes".into()));
-    }
+        .map(|s| {
+            CString::new(s.as_bytes())
+                .map_err(|_| PtyError::Exec(format!("argument contains null byte: {s:?}")))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
 
     // SAFETY: Between fork() and exec()/_exit(), only async-signal-safe
     // functions are called. All heap allocation happens before fork.
@@ -123,6 +126,17 @@ pub fn spawn_child(command: &[String], winsize: &Winsize) -> Result<ChildProcess
 /// This should be called after the I/O loop exits (PTY EOF or
 /// graceful shutdown). Uses blocking `waitpid` — the child has
 /// already exited or is about to.
+/// Default window size for tests.
+#[cfg(test)]
+fn test_winsize() -> Winsize {
+    Winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    }
+}
+
 pub fn wait_for_exit(pid: Pid) -> Result<i32, PtyError> {
     loop {
         match waitpid(pid, Some(WaitPidFlag::WNOHANG)).map_err(PtyError::Signal)? {
@@ -138,5 +152,120 @@ pub fn wait_for_exit(pid: Pid) -> Result<i32, PtyError> {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_command_rejected() {
+        let ws = test_winsize();
+        let err = spawn_child(&[], &ws).unwrap_err();
+        assert!(
+            matches!(err, PtyError::Exec(ref msg) if msg.contains("empty command")),
+            "expected Exec error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn nul_byte_in_argument_rejected() {
+        let ws = test_winsize();
+        let cmd = vec!["echo".into(), "hello\0world".into()];
+        let err = spawn_child(&cmd, &ws).unwrap_err();
+        assert!(
+            matches!(err, PtyError::Exec(ref msg) if msg.contains("null byte")),
+            "expected Exec error about null byte, got: {err}"
+        );
+    }
+
+    #[test]
+    fn nul_byte_in_first_argument_rejected() {
+        let ws = test_winsize();
+        let cmd = vec!["\0bad".into()];
+        let err = spawn_child(&cmd, &ws).unwrap_err();
+        assert!(
+            matches!(err, PtyError::Exec(ref msg) if msg.contains("null byte")),
+            "expected Exec error about null byte, got: {err}"
+        );
+    }
+
+    #[test]
+    fn spawn_true_exits_zero() {
+        let ws = test_winsize();
+        let child = spawn_child(&["true".into()], &ws).unwrap();
+        let code = wait_for_exit(child.pid).unwrap();
+        assert_eq!(code, 0);
+    }
+
+    #[test]
+    fn spawn_false_exits_nonzero() {
+        let ws = test_winsize();
+        let child = spawn_child(&["false".into()], &ws).unwrap();
+        let code = wait_for_exit(child.pid).unwrap();
+        assert_eq!(code, 1);
+    }
+
+    #[test]
+    fn nonexistent_command_exits_127() {
+        let ws = test_winsize();
+        let child = spawn_child(&["__clippy_nonexistent_cmd_12345__".into()], &ws).unwrap();
+        let code = wait_for_exit(child.pid).unwrap();
+        assert_eq!(code, 127);
+    }
+
+    #[test]
+    fn spawn_preserves_arguments() {
+        // Spawn a command that writes its argument count to the PTY.
+        // Use `sh -c 'echo $#' -- a b c` → should output "3".
+        let ws = test_winsize();
+        let child = spawn_child(
+            &[
+                "sh".into(),
+                "-c".into(),
+                "echo $#".into(),
+                "--".into(),
+                "a".into(),
+                "b".into(),
+                "c".into(),
+            ],
+            &ws,
+        )
+        .unwrap();
+
+        // Read output from PTY master.
+        let mut buf = [0u8; 256];
+        let mut output = Vec::new();
+        loop {
+            match nix::unistd::read(&child.master, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => output.extend_from_slice(&buf[..n]),
+                Err(nix::Error::EAGAIN) => {
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    // Check if child exited.
+                    if let Ok(WaitStatus::Exited(..)) =
+                        waitpid(child.pid, Some(WaitPidFlag::WNOHANG))
+                    {
+                        // Drain remaining.
+                        while let Ok(n) = nix::unistd::read(&child.master, &mut buf) {
+                            if n == 0 {
+                                break;
+                            }
+                            output.extend_from_slice(&buf[..n]);
+                        }
+                        break;
+                    }
+                }
+                Err(nix::Error::EIO) => break, // PTY closed.
+                Err(e) => panic!("read error: {e}"),
+            }
+        }
+
+        let text = String::from_utf8_lossy(&output);
+        assert!(
+            text.contains('3'),
+            "expected output to contain '3', got: {text:?}"
+        );
     }
 }

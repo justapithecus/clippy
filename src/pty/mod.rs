@@ -60,8 +60,9 @@ pub enum PtyError {
 /// - Raw mode with RAII restore (§86–101)
 /// - Turn detection in-process, non-blocking (§104–123)
 /// - Broker optional — standalone if unreachable (§155–158)
-/// - Signal forwarding per table (§182–198)
+/// - Signal forwarding per full table (§182–198) incl. SIGTSTP/SIGCONT
 /// - SIGWINCH → TIOCSWINSZ, not forwarded (§200–211)
+/// - Late registration with local turn buffer (§119, §155–158)
 /// - Exit with child's code (§169–178)
 pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, PtyError> {
     // Generate session ID.
@@ -76,6 +77,8 @@ pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, P
     let mut sig_hup = tokio_signal(SignalKind::hangup())?;
     let mut sig_quit = tokio_signal(SignalKind::quit())?;
     let mut sig_winch = tokio_signal(SignalKind::window_change())?;
+    let mut sig_tstp = tokio_signal(SignalKind::from_raw(libc::SIGTSTP))?;
+    let mut sig_cont = tokio_signal(SignalKind::from_raw(libc::SIGCONT))?;
 
     // Get terminal dimensions for the child PTY.
     let winsize = get_terminal_size()?;
@@ -115,13 +118,18 @@ pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, P
     // Non-owning stdin wrapper (don't close on drop).
     let stdin_async = AsyncFd::new(StdinFd)?;
 
+    // Latest completed turn buffer — retained locally for late
+    // registration when broker is unreachable (CONTRACT_PTY.md §119).
+    let mut latest_turn: Option<crate::turn::Turn> = None;
+
     // -- Main I/O loop --
     let mut stdin_buf = [0u8; 8192];
     let mut pty_buf = [0u8; 8192];
 
     let loop_result: Result<(), PtyError> = loop {
-        // Pending turn to send after select! (avoids borrow conflicts).
-        let mut pending_turn = None;
+        // Pending turns to send after select! (avoids borrow conflicts).
+        // Vec instead of Option: a single read chunk can emit multiple turns.
+        let mut pending_turns: Vec<crate::turn::Turn> = Vec::new();
 
         tokio::select! {
             // -- User stdin → PTY master --
@@ -175,7 +183,7 @@ pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, P
                                         interrupted = turn.interrupted,
                                         "turn completed"
                                     );
-                                    pending_turn = Some(turn);
+                                    pending_turns.push(turn);
                                 }
                             }
                         }
@@ -239,14 +247,59 @@ pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, P
                     tracing::warn!(error = %e, "SIGWINCH handling failed");
                 }
             }
+
+            _ = sig_tstp.recv() => {
+                // CONTRACT_PTY.md §190: forward to child, suspend wrapper.
+                forward_signal(child_pid, Signal::SIGTSTP)?;
+                // Restore terminal before suspending so the user's shell
+                // works while we're stopped.
+                if let Err(e) = terminal_guard.restore() {
+                    tracing::warn!(error = %e, "terminal restore before SIGTSTP failed");
+                }
+                // Raise SIGSTOP on self — tokio consumed SIGTSTP, so we
+                // use SIGSTOP to actually suspend the process.
+                signal::kill(Pid::this(), Signal::SIGSTOP).map_err(PtyError::Signal)?;
+                // Execution resumes here after SIGCONT — re-enter raw mode.
+                if let Err(e) = terminal_guard.reenter_raw() {
+                    tracing::warn!(error = %e, "terminal re-raw after resume failed");
+                }
+            }
+
+            _ = sig_cont.recv() => {
+                // CONTRACT_PTY.md §191: forward to child, resume wrapper.
+                forward_signal(child_pid, Signal::SIGCONT)?;
+            }
         }
 
-        // Send pending turn (outside select! to avoid borrow conflicts).
-        if let Some(turn) = pending_turn
-            && let Some(ref mut broker) = broker_client
-            && let Err(e) = broker.send_turn(&turn).await
-        {
-            tracing::warn!(error = %e, "failed to send turn to broker");
+        // Send pending turns (outside select! to avoid borrow conflicts).
+        if !pending_turns.is_empty() {
+            // Always update the local latest-turn buffer (for late registration).
+            latest_turn = pending_turns.last().cloned();
+
+            if let Some(ref mut broker) = broker_client {
+                for turn in &pending_turns {
+                    if let Err(e) = broker.send_turn(turn).await {
+                        tracing::warn!(error = %e, "failed to send turn to broker");
+                    }
+                }
+            } else if let Some(ref buffered) = latest_turn {
+                // Broker disconnected — attempt late registration.
+                // CONTRACT_PTY.md §119: retain latest turn and send on
+                // successful registration.
+                match BrokerClient::connect(&session_id, child_pid.as_raw() as u32, &pattern).await
+                {
+                    Ok(mut client) => {
+                        tracing::info!("late registration — connected to broker");
+                        if let Err(e) = client.send_turn(buffered).await {
+                            tracing::warn!(error = %e, "late turn send failed");
+                        }
+                        broker_client = Some(client);
+                    }
+                    Err(_) => {
+                        // Still unreachable — will retry on next turn.
+                    }
+                }
+            }
         }
     };
 
@@ -255,12 +308,16 @@ pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, P
     // Flush any unterminated prompt.
     let events = turn_detector.flush_line();
     for event in events {
-        if let TurnEvent::TurnCompleted(turn) = event
-            && let Some(ref mut broker) = broker_client
-        {
-            let _ = broker.send_turn(&turn).await;
+        if let TurnEvent::TurnCompleted(turn) = event {
+            latest_turn = Some(turn.clone());
+            if let Some(ref mut broker) = broker_client {
+                let _ = broker.send_turn(&turn).await;
+            }
         }
     }
+
+    // Suppress unused warning when broker is never connected.
+    drop(latest_turn);
 
     // Deregister from broker.
     if let Some(ref mut broker) = broker_client {

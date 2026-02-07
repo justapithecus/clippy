@@ -116,10 +116,16 @@ impl BrokerClient {
         })
     }
 
-    /// Send a completed turn to the broker.
+    /// Send a completed turn to the broker (fire-and-forget).
     ///
-    /// Sends the `TurnCompleted` message and consumes the `Response`
-    /// ack. Errors are non-fatal — the caller should log and continue.
+    /// Writes the `TurnCompleted` message to the sink and returns
+    /// immediately without waiting for the response ack. The ack
+    /// arrives on the stream and is handled in the select! broker
+    /// arm (as an ignored `Response`).
+    ///
+    /// This avoids blocking the I/O loop (CONTRACT_PTY.md §46, §49)
+    /// and prevents inject messages from being dropped during the
+    /// ack wait.
     pub async fn send_turn(&mut self, turn: &Turn) -> Result<(), PtyError> {
         let id = self.next_id;
         self.next_id += 1;
@@ -132,27 +138,7 @@ impl BrokerClient {
                 interrupted: turn.interrupted,
             })
             .await
-            .map_err(|e| PtyError::Broker(format!("send turn: {e}")))?;
-
-        // Read the response ack (or an interleaved Inject).
-        match self.stream.next().await {
-            Some(Ok(Message::Response { .. })) => Ok(()),
-            Some(Ok(Message::Inject { content, .. })) => {
-                // We received an inject while waiting for turn ack.
-                // Log it — the main loop will pick up future injects.
-                tracing::debug!(
-                    len = content.len(),
-                    "received inject during turn send (will be lost)"
-                );
-                Ok(()) // Accept potential inject loss here.
-            }
-            Some(Ok(other)) => {
-                tracing::warn!(?other, "unexpected message while waiting for turn ack");
-                Ok(())
-            }
-            Some(Err(e)) => Err(PtyError::Broker(format!("turn ack read: {e}"))),
-            None => Err(PtyError::Broker("broker disconnected".into())),
-        }
+            .map_err(|e| PtyError::Broker(format!("send turn: {e}")))
     }
 
     /// Send deregister and close the connection.

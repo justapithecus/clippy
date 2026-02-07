@@ -70,7 +70,6 @@ impl TerminalGuard {
     ///
     /// Used during SIGTSTP handling — restore before suspending so
     /// the user's shell works while the wrapper is stopped.
-    #[allow(dead_code)] // Used when SIGTSTP support is wired.
     pub fn restore(&self) -> Result<(), PtyError> {
         // SAFETY: self.fd is STDIN_FILENO, valid for process lifetime.
         let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };
@@ -87,7 +86,6 @@ impl TerminalGuard {
     ///
     /// Re-applies raw mode and non-blocking settings that were
     /// cleared by [`restore`](TerminalGuard::restore).
-    #[allow(dead_code)] // Used when SIGTSTP support is wired.
     pub fn reenter_raw(&self) -> Result<(), PtyError> {
         // SAFETY: self.fd is STDIN_FILENO, valid for process lifetime.
         let borrowed = unsafe { BorrowedFd::borrow_raw(self.fd) };

@@ -12,12 +12,11 @@ use super::ResolverError;
 ///
 /// `Send + Sync` is required because the broker may invoke clipboard
 /// operations from async task contexts.
-// Wired into broker sink in PR 4.
-#[allow(dead_code)]
 pub trait ClipboardProvider: Send + Sync {
     /// Set the system clipboard content to the given bytes.
     fn write(&self, content: &[u8]) -> Result<(), ResolverError>;
 
     /// Read the current system clipboard content.
+    #[allow(dead_code)]
     fn read(&self) -> Result<Vec<u8>, ResolverError>;
 }

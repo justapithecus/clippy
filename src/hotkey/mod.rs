@@ -23,12 +23,6 @@ use crate::resolver::{HotkeyEvent, HotkeyProvider, KeyBinding, ResolverError, Se
 pub enum HotkeyError {
     #[error("broker: {0}")]
     Broker(String),
-    // Dead in v2 (X11Context replaced by resolver adapters) — cleaned up in PR 4.
-    #[allow(dead_code)]
-    #[error("X11: {0}")]
-    X11(String),
-    // Dead in v2 (binding parsing moved into HotkeyProvider) — cleaned up in PR 4.
-    #[allow(dead_code)]
     #[error("invalid key binding: {0}")]
     InvalidBinding(String),
     #[error("resolver: {0}")]

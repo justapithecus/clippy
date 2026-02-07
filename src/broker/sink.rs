@@ -10,44 +10,22 @@
 
 use super::state::SinkMetadata;
 
-/// Write content to the X11 clipboard via `xclip`.
+/// Write content to the system clipboard via the provided writer.
 ///
-/// Spawns `xclip -selection clipboard`, pipes `content` to stdin, and
-/// waits for exit. Returns `Err("clipboard_failed")` on non-zero exit
-/// or if xclip is not found.
+/// Delegates to `clipboard_writer` for the actual clipboard operation.
+/// Returns `Err("clipboard_failed")` if the writer fails.
+///
+/// The writer is a boxed closure that wraps a `ClipboardProvider::write()`
+/// call, keeping the broker structurally independent of resolver types.
 ///
 /// `metadata` is accepted per CONTRACT_REGISTRY.md §266 but unused
-/// by the clipboard sink in v1.
-pub async fn deliver_clipboard(content: &[u8], _metadata: &SinkMetadata) -> Result<(), String> {
-    use tokio::process::Command;
-
-    let mut child = Command::new("xclip")
-        .args(["-selection", "clipboard"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|_| "clipboard_failed".to_string())?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        use tokio::io::AsyncWriteExt;
-        stdin
-            .write_all(content)
-            .await
-            .map_err(|_| "clipboard_failed".to_string())?;
-        // Drop stdin to close the pipe so xclip can finish.
-    }
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|_| "clipboard_failed".to_string())?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err("clipboard_failed".to_string())
-    }
+/// by the clipboard sink.
+pub async fn deliver_clipboard(
+    content: &[u8],
+    _metadata: &SinkMetadata,
+    clipboard_writer: &(dyn Fn(&[u8]) -> Result<(), String> + Sync),
+) -> Result<(), String> {
+    clipboard_writer(content)
 }
 
 /// Write content to a file.

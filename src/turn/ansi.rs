@@ -13,6 +13,9 @@ enum State {
     Escape,
     /// Inside a CSI sequence (ESC [ ...). Consuming until final byte.
     Csi,
+    /// Inside an nF escape sequence (ESC + intermediate bytes 0x20-0x2F
+    /// + final byte 0x30-0x7E). E.g. ESC ( B (designate G0 charset).
+    EscapeIntermediate,
     /// Inside an OSC sequence (ESC ] ...). Consuming until BEL or ST.
     Osc,
     /// Inside OSC, saw ESC — expecting '\' for ST (String Terminator).
@@ -70,15 +73,10 @@ impl AnsiStripper {
                     // For simplicity, consume one byte after ESC for
                     // sequences that aren't CSI or OSC.
                     0x20..=0x2F => {
-                        // Intermediate byte — part of an escape sequence
-                        // like ESC ( B (charset select). Consume until
-                        // we see a final byte (0x30..0x7E).
-                        // Stay in Escape to consume the next byte.
-                        // Actually, these are "nF" type sequences that
-                        // have intermediate bytes then a final byte.
-                        // For simplicity, just go back to ground — most
-                        // terminal sequences we care about are CSI/OSC.
-                        self.state = State::Ground;
+                        // Intermediate byte — start of an nF escape
+                        // sequence (e.g. ESC ( B for charset select).
+                        // Consume intermediate bytes then a final byte.
+                        self.state = State::EscapeIntermediate;
                     }
                     _ => {
                         // Single-character escape sequence (e.g., ESC M,
@@ -94,6 +92,18 @@ impl AnsiStripper {
                         self.state = State::Ground;
                     }
                     // Otherwise consume parameter/intermediate bytes.
+                }
+                State::EscapeIntermediate => {
+                    // nF sequences: ESC (intermediate 0x20-0x2F)+
+                    //               (final 0x30-0x7E)
+                    // Consume additional intermediate bytes; transition
+                    // to Ground on the final byte.
+                    if (0x20..=0x2F).contains(&byte) {
+                        // More intermediate bytes — stay.
+                    } else {
+                        // Final byte (or unexpected) — sequence done.
+                        self.state = State::Ground;
+                    }
                 }
                 State::Osc => {
                     // OSC sequences end with BEL (0x07) or ST (ESC \).
@@ -214,5 +224,44 @@ mod tests {
     fn interleaved_text_and_escapes() {
         let input = b"a\x1b[1mb\x1b[2mc\x1b[3md";
         assert_eq!(strip_ansi(input), b"abcd");
+    }
+
+    #[test]
+    fn nf_charset_select_stripped() {
+        // ESC ( B — designate G0 charset as ASCII
+        let input = b"\x1b(Bhello";
+        assert_eq!(strip_ansi(input), b"hello");
+    }
+
+    #[test]
+    fn nf_charset_select_g1() {
+        // ESC ) 0 — designate G1 charset as line drawing
+        let input = b"\x1b)0world";
+        assert_eq!(strip_ansi(input), b"world");
+    }
+
+    #[test]
+    fn nf_sequence_does_not_leak_final_byte() {
+        // ESC ( B should consume all three bytes; 'B' must not leak.
+        let input = b"before\x1b(Bafter";
+        assert_eq!(strip_ansi(input), b"beforeafter");
+    }
+
+    #[test]
+    fn nf_multiple_intermediate_bytes() {
+        // Hypothetical nF sequence with two intermediate bytes + final.
+        let input = b"\x1b #8visible";
+        assert_eq!(strip_ansi(input), b"visible");
+    }
+
+    #[test]
+    fn nf_split_across_chunks() {
+        let mut stripper = AnsiStripper::new();
+        let out1 = stripper.strip(b"before\x1b(");
+        let out2 = stripper.strip(b"Bafter");
+
+        let mut combined = out1;
+        combined.extend(out2);
+        assert_eq!(combined, b"beforeafter");
     }
 }

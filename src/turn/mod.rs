@@ -124,6 +124,11 @@ impl TurnDetector {
     /// Returns any events produced by processing this chunk. Output
     /// is processed byte-by-byte: lines are assembled and checked
     /// against the prompt pattern after ANSI stripping.
+    ///
+    /// **Echo-stripping**: The caller (PTY wrapper) is responsible for
+    /// excluding echoed user input before feeding data here.
+    /// CONTRACT_TURN.md §126–136 requires turn content to exclude
+    /// echoed input, but the mechanism is an upstream concern.
     pub fn feed_output(&mut self, data: &[u8]) -> Vec<TurnEvent> {
         let mut events = Vec::new();
 

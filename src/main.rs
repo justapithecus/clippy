@@ -4,6 +4,7 @@ mod client;
 mod hotkey;
 mod ipc;
 mod pty;
+mod resolver;
 mod turn;
 
 use clap::Parser;

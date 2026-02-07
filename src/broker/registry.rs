@@ -5,7 +5,6 @@
 //! turn IDs and metadata. See CONTRACT_REGISTRY.md.
 
 use std::collections::VecDeque;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// A single completed turn stored in the ring buffer.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,7 +38,12 @@ pub struct TurnRingBuffer {
 
 impl TurnRingBuffer {
     /// Create a new ring buffer for the given session.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `capacity` is 0. The ring buffer must hold at least one turn.
     pub fn new(session_id: String, capacity: usize, max_turn_bytes: usize) -> Self {
+        assert!(capacity >= 1, "ring buffer capacity must be >= 1");
         Self {
             entries: VecDeque::with_capacity(capacity),
             capacity,
@@ -55,8 +59,11 @@ impl TurnRingBuffer {
     /// if it exceeds `max_turn_bytes`, and evicts the oldest turn if
     /// the buffer is at capacity.
     ///
+    /// `timestamp` is the detection-time Unix epoch millis, set by the
+    /// wrapper when the turn was completed (CONTRACT_REGISTRY.md §73).
+    ///
     /// Returns a reference to the newly inserted record.
-    pub fn push(&mut self, mut content: Vec<u8>, interrupted: bool) -> &TurnRecord {
+    pub fn push(&mut self, mut content: Vec<u8>, interrupted: bool, timestamp: u64) -> &TurnRecord {
         let turn_id = format!("{}:{}", self.session_id, self.next_seq);
         self.next_seq += 1;
 
@@ -65,11 +72,6 @@ impl TurnRingBuffer {
         if truncated {
             content.truncate(self.max_turn_bytes);
         }
-
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock before epoch")
-            .as_millis() as u64;
 
         let record = TurnRecord {
             turn_id,
@@ -128,7 +130,7 @@ mod tests {
     #[test]
     fn push_and_read_head() {
         let mut r = ring(4);
-        r.push(b"hello".to_vec(), false);
+        r.push(b"hello".to_vec(), false, 1000);
         let head = r.head().unwrap();
         assert_eq!(head.content, b"hello");
         assert!(!head.interrupted);
@@ -139,9 +141,9 @@ mod tests {
     #[test]
     fn turn_id_format() {
         let mut r = ring(4);
-        r.push(b"a".to_vec(), false);
+        r.push(b"a".to_vec(), false, 1000);
         assert_eq!(r.head().unwrap().turn_id, "test-session:1");
-        r.push(b"b".to_vec(), false);
+        r.push(b"b".to_vec(), false, 1000);
         assert_eq!(r.head().unwrap().turn_id, "test-session:2");
     }
 
@@ -149,7 +151,7 @@ mod tests {
     fn sequence_monotonically_increasing() {
         let mut r = ring(8);
         for i in 1..=5 {
-            r.push(format!("turn-{i}").into_bytes(), false);
+            r.push(format!("turn-{i}").into_bytes(), false, 1000);
             assert_eq!(r.head().unwrap().turn_id, format!("test-session:{i}"));
         }
     }
@@ -157,12 +159,12 @@ mod tests {
     #[test]
     fn ring_eviction_at_capacity() {
         let mut r = ring(3);
-        r.push(b"a".to_vec(), false); // seq 1
-        r.push(b"b".to_vec(), false); // seq 2
-        r.push(b"c".to_vec(), false); // seq 3
+        r.push(b"a".to_vec(), false, 1000); // seq 1
+        r.push(b"b".to_vec(), false, 1000); // seq 2
+        r.push(b"c".to_vec(), false, 1000); // seq 3
         assert_eq!(r.len(), 3);
 
-        r.push(b"d".to_vec(), false); // seq 4 — evicts seq 1
+        r.push(b"d".to_vec(), false, 1000); // seq 4 — evicts seq 1
         assert_eq!(r.len(), 3);
         assert!(r.get("test-session:1").is_none(), "seq 1 should be evicted");
         assert!(r.get("test-session:2").is_some());
@@ -173,7 +175,7 @@ mod tests {
     fn truncation_at_max_turn_bytes() {
         let mut r = TurnRingBuffer::new("s".into(), 4, 10);
         let content = vec![0u8; 20];
-        r.push(content, false);
+        r.push(content, false, 1000);
         let head = r.head().unwrap();
         assert!(head.truncated);
         assert_eq!(head.content.len(), 10);
@@ -183,7 +185,7 @@ mod tests {
     #[test]
     fn no_truncation_within_limit() {
         let mut r = TurnRingBuffer::new("s".into(), 4, 100);
-        r.push(vec![0u8; 50], false);
+        r.push(vec![0u8; 50], false, 1000);
         let head = r.head().unwrap();
         assert!(!head.truncated);
         assert_eq!(head.content.len(), 50);
@@ -193,7 +195,7 @@ mod tests {
     #[test]
     fn get_hit_and_miss() {
         let mut r = ring(4);
-        r.push(b"data".to_vec(), false);
+        r.push(b"data".to_vec(), false, 1000);
         assert!(r.get("test-session:1").is_some());
         assert!(r.get("test-session:999").is_none());
         assert!(r.get("other-session:1").is_none());
@@ -202,9 +204,9 @@ mod tests {
     #[test]
     fn iter_newest_first_ordering() {
         let mut r = ring(4);
-        r.push(b"first".to_vec(), false);
-        r.push(b"second".to_vec(), false);
-        r.push(b"third".to_vec(), false);
+        r.push(b"first".to_vec(), false, 1000);
+        r.push(b"second".to_vec(), false, 1000);
+        r.push(b"third".to_vec(), false, 1000);
 
         let ids: Vec<&str> = r
             .iter_newest_first(None)
@@ -220,7 +222,7 @@ mod tests {
     fn iter_newest_first_with_limit() {
         let mut r = ring(8);
         for _ in 0..5 {
-            r.push(b"x".to_vec(), false);
+            r.push(b"x".to_vec(), false, 1000);
         }
         let count = r.iter_newest_first(Some(2)).count();
         assert_eq!(count, 2);
@@ -235,51 +237,57 @@ mod tests {
     }
 
     #[test]
-    fn timestamp_is_positive() {
+    fn timestamp_preserved_from_caller() {
         let mut r = ring(4);
-        r.push(b"data".to_vec(), false);
-        assert!(r.head().unwrap().timestamp > 0);
+        r.push(b"data".to_vec(), false, 1700000000000);
+        assert_eq!(r.head().unwrap().timestamp, 1700000000000);
     }
 
     #[test]
     fn interrupted_flag_stored() {
         let mut r = ring(4);
-        r.push(b"data".to_vec(), true);
+        r.push(b"data".to_vec(), true, 1000);
         assert!(r.head().unwrap().interrupted);
     }
 
     #[test]
     fn metadata_correctness() {
         let mut r = ring(4);
-        r.push(b"hello world".to_vec(), true);
+        r.push(b"hello world".to_vec(), true, 42000);
         let head = r.head().unwrap();
         assert_eq!(head.byte_length, 11);
         assert!(head.interrupted);
         assert!(!head.truncated);
-        assert!(head.timestamp > 0);
+        assert_eq!(head.timestamp, 42000);
         assert_eq!(head.turn_id, "test-session:1");
     }
 
     #[test]
     fn sequence_continues_after_eviction() {
         let mut r = ring(2);
-        r.push(b"a".to_vec(), false); // seq 1
-        r.push(b"b".to_vec(), false); // seq 2
-        r.push(b"c".to_vec(), false); // seq 3 — evicts seq 1
+        r.push(b"a".to_vec(), false, 1000); // seq 1
+        r.push(b"b".to_vec(), false, 1000); // seq 2
+        r.push(b"c".to_vec(), false, 1000); // seq 3 — evicts seq 1
         assert_eq!(r.head().unwrap().turn_id, "test-session:3");
         // Sequence never resets
-        r.push(b"d".to_vec(), false); // seq 4
+        r.push(b"d".to_vec(), false, 1000); // seq 4
         assert_eq!(r.head().unwrap().turn_id, "test-session:4");
     }
 
     #[test]
     fn capacity_one_ring() {
         let mut r = ring(1);
-        r.push(b"first".to_vec(), false);
+        r.push(b"first".to_vec(), false, 1000);
         assert_eq!(r.len(), 1);
-        r.push(b"second".to_vec(), false);
+        r.push(b"second".to_vec(), false, 1000);
         assert_eq!(r.len(), 1);
         assert_eq!(r.head().unwrap().content, b"second");
         assert!(r.get("test-session:1").is_none());
+    }
+
+    #[test]
+    #[should_panic(expected = "ring buffer capacity must be >= 1")]
+    fn capacity_zero_panics() {
+        TurnRingBuffer::new("s".into(), 0, 4096);
     }
 }

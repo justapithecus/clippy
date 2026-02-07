@@ -386,6 +386,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"hello from agent".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
         )
         .await;
@@ -551,6 +552,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"data".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
         )
         .await;

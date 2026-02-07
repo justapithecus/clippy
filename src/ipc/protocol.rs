@@ -43,6 +43,8 @@ pub enum Message {
         #[serde(with = "serde_bytes")]
         content: Vec<u8>,
         interrupted: bool,
+        /// Unix epoch millis when the turn was detected by the wrapper.
+        timestamp: u64,
     },
 
     // -- Capture / Paste --
@@ -201,6 +203,7 @@ mod tests {
             session: "abc-123".into(),
             content: b"hello world\nline 2\n".to_vec(),
             interrupted: false,
+            timestamp: 1000,
         };
         assert_eq!(round_trip(&msg), msg);
     }
@@ -214,6 +217,7 @@ mod tests {
             session: "test".into(),
             content: binary_content.clone(),
             interrupted: true,
+            timestamp: 1000,
         };
         let decoded = round_trip(&msg);
         match decoded {

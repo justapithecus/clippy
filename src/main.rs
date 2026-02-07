@@ -31,7 +31,7 @@ async fn main() {
             max_turn_size,
         } => {
             let config = broker::state::RingConfig {
-                depth: ring_depth,
+                depth: ring_depth as usize,
                 max_turn_bytes: max_turn_size,
             };
             if let Err(e) = broker::run(config).await {

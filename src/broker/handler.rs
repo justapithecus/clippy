@@ -66,11 +66,13 @@ pub fn handle_message(
             session,
             content,
             interrupted,
+            timestamp,
         } => {
             if !is_wrapper(state, connection_id) {
                 return (error_response(id, "unknown_type"), None);
             }
-            let response = handle_turn_completed(state, id, &session, content, interrupted);
+            let response =
+                handle_turn_completed(state, id, &session, content, interrupted, timestamp);
             (response, None)
         }
         // -- Any role --
@@ -147,8 +149,9 @@ fn handle_turn_completed(
     session: &str,
     content: Vec<u8>,
     interrupted: bool,
+    timestamp: u64,
 ) -> Message {
-    match state.store_turn(session, content, interrupted) {
+    match state.store_turn(session, content, interrupted, timestamp) {
         Ok(turn_id) => Message::Response {
             id,
             status: Status::Ok,
@@ -417,6 +420,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"output".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -440,6 +444,7 @@ mod tests {
                 session: "nonexistent".into(),
                 content: b"data".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -470,6 +475,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"data".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -495,6 +501,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"12345".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -542,6 +549,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"turn data".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c1,
         );
@@ -677,6 +685,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"data".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -701,6 +710,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"data".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -727,6 +737,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"data".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -767,6 +778,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"data".to_vec(),
                 interrupted: true,
+                timestamp: 1000,
             },
             c,
         );
@@ -796,6 +808,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"a".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );
@@ -806,6 +819,7 @@ mod tests {
                 session: "s1".into(),
                 content: b"b".to_vec(),
                 interrupted: false,
+                timestamp: 1000,
             },
             c,
         );

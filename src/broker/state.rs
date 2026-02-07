@@ -158,17 +158,19 @@ impl BrokerState {
     ///
     /// CONTRACT_BROKER.md §Turn Storage: raw bytes, no interpretation.
     /// CONTRACT_REGISTRY.md: turn IDs, metadata, ring eviction.
+    /// `timestamp` is the detection-time Unix epoch millis from the wrapper.
     pub fn store_turn(
         &mut self,
         session_id: &str,
         content: Vec<u8>,
         interrupted: bool,
+        timestamp: u64,
     ) -> Result<String, &'static str> {
         let entry = self
             .sessions
             .get_mut(session_id)
             .ok_or("session_not_found")?;
-        let record = entry.ring.push(content, interrupted);
+        let record = entry.ring.push(content, interrupted, timestamp);
         Ok(record.turn_id.clone())
     }
 
@@ -374,7 +376,9 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        let turn_id = s.store_turn("s1", b"turn content".to_vec(), false).unwrap();
+        let turn_id = s
+            .store_turn("s1", b"turn content".to_vec(), false, 1000)
+            .unwrap();
         assert_eq!(turn_id, "s1:1");
     }
 
@@ -384,8 +388,8 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        let t1 = s.store_turn("s1", b"first".to_vec(), false).unwrap();
-        let t2 = s.store_turn("s1", b"second".to_vec(), false).unwrap();
+        let t1 = s.store_turn("s1", b"first".to_vec(), false, 1000).unwrap();
+        let t2 = s.store_turn("s1", b"second".to_vec(), false, 1000).unwrap();
         assert_eq!(t1, "s1:1");
         assert_eq!(t2, "s1:2");
     }
@@ -396,8 +400,8 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"first".to_vec(), false).unwrap();
-        s.store_turn("s1", b"second".to_vec(), false).unwrap();
+        s.store_turn("s1", b"first".to_vec(), false, 1000).unwrap();
+        s.store_turn("s1", b"second".to_vec(), false, 1000).unwrap();
         let head = s.sessions["s1"].ring.head().unwrap();
         assert_eq!(head.content, b"second");
     }
@@ -408,7 +412,7 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"data".to_vec(), true).unwrap();
+        s.store_turn("s1", b"data".to_vec(), true, 1000).unwrap();
         let head = s.sessions["s1"].ring.head().unwrap();
         assert!(head.interrupted);
     }
@@ -417,7 +421,7 @@ mod tests {
     fn store_turn_session_not_found() {
         let mut s = state();
         assert_eq!(
-            s.store_turn("nonexistent", b"data".to_vec(), false),
+            s.store_turn("nonexistent", b"data".to_vec(), false, 1000),
             Err("session_not_found")
         );
     }
@@ -430,7 +434,8 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"turn data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"turn data".to_vec(), false, 1000)
+            .unwrap();
         let result = s.capture("s1").unwrap();
         assert_eq!(result.size, 9);
         assert_eq!(result.turn_id, "s1:1");
@@ -446,8 +451,8 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"a".to_vec(), false).unwrap();
-        s.store_turn("s1", b"b".to_vec(), false).unwrap();
+        s.store_turn("s1", b"a".to_vec(), false, 1000).unwrap();
+        s.store_turn("s1", b"b".to_vec(), false, 1000).unwrap();
         let result = s.capture("s1").unwrap();
         // Captures the head (latest = seq 2).
         assert_eq!(result.turn_id, "s1:2");
@@ -474,7 +479,8 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"turn data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"turn data".to_vec(), false, 1000)
+            .unwrap();
         s.capture("s1").unwrap();
         // Session's ring still has the turn.
         assert!(!s.sessions["s1"].ring.is_empty());
@@ -486,9 +492,9 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"first".to_vec(), false).unwrap();
+        s.store_turn("s1", b"first".to_vec(), false, 1000).unwrap();
         s.capture("s1").unwrap();
-        s.store_turn("s1", b"second".to_vec(), false).unwrap();
+        s.store_turn("s1", b"second".to_vec(), false, 1000).unwrap();
         s.capture("s1").unwrap();
         assert_eq!(s.relay_buffer.as_ref().unwrap().content, b"second".to_vec());
     }
@@ -504,7 +510,8 @@ mod tests {
         s.add_connection(c2, Role::Wrapper);
         s.register_session("s1".into(), c1, 100).unwrap();
         s.register_session("s2".into(), c2, 200).unwrap();
-        s.store_turn("s1", b"turn data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"turn data".to_vec(), false, 1000)
+            .unwrap();
         s.capture("s1").unwrap();
 
         let (content, target) = s.paste_content("s2").unwrap();
@@ -537,7 +544,8 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"turn data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"turn data".to_vec(), false, 1000)
+            .unwrap();
         s.capture("s1").unwrap();
         // Simulate disconnect without deregister.
         s.connections.remove(&c);
@@ -550,7 +558,7 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"data".to_vec(), false, 1000).unwrap();
         s.capture("s1").unwrap();
         s.paste_content("s1").unwrap();
         // Relay buffer still has content.
@@ -571,7 +579,7 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"data".to_vec(), false, 1000).unwrap();
 
         let c2 = conn();
         s.add_connection(c2, Role::Wrapper);
@@ -596,7 +604,7 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"data".to_vec(), false, 1000).unwrap();
         let record = s.get_turn("s1:1").unwrap();
         assert_eq!(record.content, b"data");
     }
@@ -622,7 +630,7 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"data".to_vec(), false, 1000).unwrap();
         assert_eq!(s.get_turn("s2:1"), Err("turn_not_found"));
     }
 
@@ -634,9 +642,9 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"a".to_vec(), false).unwrap();
-        s.store_turn("s1", b"b".to_vec(), false).unwrap();
-        s.store_turn("s1", b"c".to_vec(), false).unwrap();
+        s.store_turn("s1", b"a".to_vec(), false, 1000).unwrap();
+        s.store_turn("s1", b"b".to_vec(), false, 1000).unwrap();
+        s.store_turn("s1", b"c".to_vec(), false, 1000).unwrap();
         let turns = s.list_turns("s1", None).unwrap();
         let ids: Vec<&str> = turns.iter().map(|t| t.turn_id.as_str()).collect();
         assert_eq!(ids, vec!["s1:3", "s1:2", "s1:1"]);
@@ -649,7 +657,7 @@ mod tests {
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
         for _ in 0..5 {
-            s.store_turn("s1", b"x".to_vec(), false).unwrap();
+            s.store_turn("s1", b"x".to_vec(), false, 1000).unwrap();
         }
         let turns = s.list_turns("s1", Some(2)).unwrap();
         assert_eq!(turns.len(), 2);
@@ -669,8 +677,8 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"first".to_vec(), false).unwrap();
-        s.store_turn("s1", b"second".to_vec(), false).unwrap();
+        s.store_turn("s1", b"first".to_vec(), false, 1000).unwrap();
+        s.store_turn("s1", b"second".to_vec(), false, 1000).unwrap();
         // Capture the first turn, not the head.
         let result = s.capture_by_id("s1:1").unwrap();
         assert_eq!(result.turn_id, "s1:1");
@@ -701,7 +709,7 @@ mod tests {
         let c = conn();
         s.add_connection(c, Role::Wrapper);
         s.register_session("s1".into(), c, 100).unwrap();
-        s.store_turn("s1", b"data".to_vec(), false).unwrap();
+        s.store_turn("s1", b"data".to_vec(), false, 1000).unwrap();
         s.capture("s1").unwrap();
         assert_eq!(s.relay_buffer.as_ref().unwrap().turn_id, "s1:1");
     }

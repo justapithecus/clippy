@@ -30,8 +30,12 @@ async fn main() {
             ring_depth,
             max_turn_size,
         } => {
+            let depth = usize::try_from(ring_depth).unwrap_or_else(|_| {
+                eprintln!("clippyd broker: --ring-depth value too large for this platform");
+                std::process::exit(1);
+            });
             let config = broker::state::RingConfig {
-                depth: ring_depth as usize,
+                depth,
                 max_turn_bytes: max_turn_size,
             };
             if let Err(e) = broker::run(config).await {

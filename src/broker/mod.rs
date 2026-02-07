@@ -14,6 +14,7 @@
 mod connection;
 mod handler;
 pub mod registry;
+mod sink;
 pub mod state;
 
 use std::collections::HashMap;
@@ -23,7 +24,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use connection::{BrokerCommand, DisconnectNotice};
-use handler::InjectAction;
+use handler::{InjectAction, SideEffect};
 use state::{BrokerState, ConnectionId};
 
 use crate::ipc::protocol::Message;
@@ -102,18 +103,32 @@ pub async fn run(config: state::RingConfig) -> Result<(), BrokerError> {
 
             // -- Command from connection task --
             Some(cmd) = cmd_rx.recv() => {
-                let (response, inject_action) = handler::handle_message(
+                let (mut response, side_effect) = handler::handle_message(
                     &mut state,
                     cmd.request,
                     cmd.connection_id,
                 );
-                // Send response to requesting connection.
-                let _ = cmd.response_tx.send(response);
 
-                // Route inject to target wrapper if paste succeeded.
-                if let Some(inject) = inject_action {
-                    dispatch_inject(&inject_senders, inject);
+                // Execute side effects before sending the response.
+                if let Some(effect) = side_effect {
+                    match effect {
+                        SideEffect::Inject(action) => {
+                            dispatch_inject(&inject_senders, action);
+                        }
+                        SideEffect::Clipboard { content, request_id } => {
+                            if let Err(reason) = sink::deliver_clipboard(&content).await {
+                                response = handler::error_response(request_id, &reason);
+                            }
+                        }
+                        SideEffect::FileWrite { path, content, request_id } => {
+                            if let Err(reason) = sink::deliver_file(&path, &content).await {
+                                response = handler::error_response(request_id, &reason);
+                            }
+                        }
+                    }
                 }
+
+                let _ = cmd.response_tx.send(response);
             }
 
             // -- Connection disconnected --
@@ -295,16 +310,30 @@ mod tests {
                         }
                     }
                     Some(cmd) = cmd_rx.recv() => {
-                        let (response, inject_action) =
+                        let (mut response, side_effect) =
                             handler::handle_message(
                                 &mut state,
                                 cmd.request,
                                 cmd.connection_id,
                             );
-                        let _ = cmd.response_tx.send(response);
-                        if let Some(inject) = inject_action {
-                            dispatch_inject(&inject_senders, inject);
+                        if let Some(effect) = side_effect {
+                            match effect {
+                                SideEffect::Inject(action) => {
+                                    dispatch_inject(&inject_senders, action);
+                                }
+                                SideEffect::Clipboard { content, request_id } => {
+                                    if let Err(reason) = sink::deliver_clipboard(&content).await {
+                                        response = handler::error_response(request_id, &reason);
+                                    }
+                                }
+                                SideEffect::FileWrite { path, content, request_id } => {
+                                    if let Err(reason) = sink::deliver_file(&path, &content).await {
+                                        response = handler::error_response(request_id, &reason);
+                                    }
+                                }
+                            }
                         }
+                        let _ = cmd.response_tx.send(response);
                     }
                     Some(notice) = disconnect_rx.recv() => {
                         inject_senders.remove(&notice.connection_id);
@@ -978,5 +1007,146 @@ mod tests {
             }
             other => panic!("expected Response, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn deliver_inject_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("broker.sock");
+        let _broker = start_broker(&sock).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Wrapper registers and sends a turn.
+        let mut wrapper = connect(&sock).await;
+        handshake(&mut wrapper, Role::Wrapper).await;
+        send_recv(
+            &mut wrapper,
+            Message::Register {
+                id: 1,
+                session: "s1".into(),
+                pid: 42,
+                pattern: "generic".into(),
+            },
+        )
+        .await;
+        send_recv(
+            &mut wrapper,
+            Message::TurnCompleted {
+                id: 2,
+                session: "s1".into(),
+                content: b"deliver inject content".to_vec(),
+                interrupted: false,
+                timestamp: 1000,
+            },
+        )
+        .await;
+
+        // Client captures, then delivers via inject sink.
+        let mut client = connect(&sock).await;
+        handshake(&mut client, Role::Client).await;
+        send_recv(
+            &mut client,
+            Message::Capture {
+                id: 1,
+                session: "s1".into(),
+            },
+        )
+        .await;
+
+        let resp = send_recv(
+            &mut client,
+            Message::Deliver {
+                id: 2,
+                sink: "inject".into(),
+                session: Some("s1".into()),
+                path: None,
+            },
+        )
+        .await;
+        assert!(matches!(
+            resp,
+            Message::Response {
+                status: Status::Ok,
+                ..
+            }
+        ));
+
+        // Wrapper should receive the inject command.
+        let inject = wrapper.next().await.unwrap().unwrap();
+        match inject {
+            Message::Inject { id, content } => {
+                assert_eq!(id, 0);
+                assert_eq!(content, b"deliver inject content");
+            }
+            other => panic!("expected Inject, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn deliver_file_flow() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("broker.sock");
+        let output_path = dir.path().join("delivered.txt");
+        let _broker = start_broker(&sock).await;
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        // Wrapper registers and sends a turn.
+        let mut wrapper = connect(&sock).await;
+        handshake(&mut wrapper, Role::Wrapper).await;
+        send_recv(
+            &mut wrapper,
+            Message::Register {
+                id: 1,
+                session: "s1".into(),
+                pid: 42,
+                pattern: "generic".into(),
+            },
+        )
+        .await;
+        send_recv(
+            &mut wrapper,
+            Message::TurnCompleted {
+                id: 2,
+                session: "s1".into(),
+                content: b"file sink content".to_vec(),
+                interrupted: false,
+                timestamp: 1000,
+            },
+        )
+        .await;
+
+        // Client captures, then delivers via file sink.
+        let mut client = connect(&sock).await;
+        handshake(&mut client, Role::Client).await;
+        send_recv(
+            &mut client,
+            Message::Capture {
+                id: 1,
+                session: "s1".into(),
+            },
+        )
+        .await;
+
+        let resp = send_recv(
+            &mut client,
+            Message::Deliver {
+                id: 2,
+                sink: "file".into(),
+                session: None,
+                path: Some(output_path.to_str().unwrap().into()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            resp,
+            Message::Response {
+                status: Status::Ok,
+                ..
+            }
+        ));
+
+        // Verify file was written.
+        let written = tokio::fs::read(&output_path).await.unwrap();
+        assert_eq!(written, b"file sink content");
     }
 }

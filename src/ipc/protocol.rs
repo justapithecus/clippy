@@ -84,6 +84,17 @@ pub enum Message {
     #[serde(rename = "capture_by_id")]
     CaptureByID { id: u32, turn_id: String },
 
+    // -- Sink delivery (v1) --
+    #[serde(rename = "deliver")]
+    Deliver {
+        id: u32,
+        sink: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
+    },
+
     // -- Generic response --
     #[serde(rename = "response")]
     Response {
@@ -505,6 +516,28 @@ mod tests {
         let msg = Message::CaptureByID {
             id: 13,
             turn_id: "s1:2".into(),
+        };
+        assert_eq!(round_trip(&msg), msg);
+    }
+
+    #[test]
+    fn deliver_inject_round_trip() {
+        let msg = Message::Deliver {
+            id: 20,
+            sink: "inject".into(),
+            session: Some("s1".into()),
+            path: None,
+        };
+        assert_eq!(round_trip(&msg), msg);
+    }
+
+    #[test]
+    fn deliver_file_round_trip() {
+        let msg = Message::Deliver {
+            id: 21,
+            sink: "file".into(),
+            session: None,
+            path: Some("/tmp/turn.txt".into()),
         };
         assert_eq!(round_trip(&msg), msg);
     }

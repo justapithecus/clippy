@@ -2,7 +2,7 @@
 //!
 //! Pure logic — no I/O. Each handler takes a mutable reference to
 //! [`BrokerState`] and returns a response message plus an optional
-//! [`InjectAction`] for paste-triggered inject commands.
+//! [`SideEffect`] for inject, clipboard, or file delivery.
 //!
 //! See CONTRACT_BROKER.md §Request / Response.
 
@@ -21,6 +21,26 @@ pub struct InjectAction {
     pub message: Message,
 }
 
+/// Side effects produced by message handlers.
+///
+/// The broker loop executes these after (or instead of) sending the
+/// response. For clipboard and file sinks, the effect is executed
+/// *before* the response is sent — the broker loop may override the
+/// optimistic ok response with an error on failure.
+#[derive(Debug)]
+pub enum SideEffect {
+    /// Route content to a wrapper's PTY (existing paste behavior).
+    Inject(InjectAction),
+    /// Write relay buffer content to X11 clipboard.
+    Clipboard { content: Vec<u8>, request_id: u32 },
+    /// Write relay buffer content to a file.
+    FileWrite {
+        path: String,
+        content: Vec<u8>,
+        request_id: u32,
+    },
+}
+
 /// Dispatch a request message to the appropriate handler.
 ///
 /// Returns `(response, optional_inject_action)`. The broker loop
@@ -35,7 +55,7 @@ pub fn handle_message(
     state: &mut BrokerState,
     request: Message,
     connection_id: ConnectionId,
-) -> (Message, Option<InjectAction>) {
+) -> (Message, Option<SideEffect>) {
     match request {
         Message::Hello { id, version, role } => {
             let response = handle_hello(state, id, version, role, connection_id);
@@ -104,6 +124,13 @@ pub fn handle_message(
             let response = handle_capture_by_id(state, id, &turn_id);
             (response, None)
         }
+        // -- Sink delivery (v1, any role) --
+        Message::Deliver {
+            id,
+            sink,
+            session,
+            path,
+        } => handle_deliver(state, id, &sink, session.as_deref(), path.as_deref()),
         // Server-originated messages should never be sent by clients.
         Message::HelloAck { id, .. }
         | Message::Response { id, .. }
@@ -209,18 +236,14 @@ fn handle_capture(state: &mut BrokerState, id: u32, session: &str) -> Message {
     }
 }
 
-fn handle_paste(
-    state: &mut BrokerState,
-    id: u32,
-    session: &str,
-) -> (Message, Option<InjectAction>) {
+fn handle_paste(state: &mut BrokerState, id: u32, session: &str) -> (Message, Option<SideEffect>) {
     match state.paste_content(session) {
         Ok((content, target_conn)) => {
             let inject = InjectAction {
                 target_connection: target_conn,
                 message: Message::Inject { id: 0, content },
             };
-            (ok_response(id), Some(inject))
+            (ok_response(id), Some(SideEffect::Inject(inject)))
         }
         Err(reason) => (error_response(id, reason), None),
     }
@@ -317,6 +340,56 @@ fn handle_capture_by_id(state: &mut BrokerState, id: u32, turn_id: &str) -> Mess
     }
 }
 
+fn handle_deliver(
+    state: &mut BrokerState,
+    id: u32,
+    sink: &str,
+    session: Option<&str>,
+    path: Option<&str>,
+) -> (Message, Option<SideEffect>) {
+    match sink {
+        "inject" => {
+            let session = match session {
+                Some(s) => s,
+                None => return (error_response(id, "missing_field"), None),
+            };
+            handle_paste(state, id, session)
+        }
+        "clipboard" => {
+            let content = match state.relay_content() {
+                Some(c) => c,
+                None => return (error_response(id, "buffer_empty"), None),
+            };
+            (
+                ok_response(id),
+                Some(SideEffect::Clipboard {
+                    content,
+                    request_id: id,
+                }),
+            )
+        }
+        "file" => {
+            let path = match path {
+                Some(p) => p,
+                None => return (error_response(id, "missing_field"), None),
+            };
+            let content = match state.relay_content() {
+                Some(c) => c,
+                None => return (error_response(id, "buffer_empty"), None),
+            };
+            (
+                ok_response(id),
+                Some(SideEffect::FileWrite {
+                    path: path.to_string(),
+                    content,
+                    request_id: id,
+                }),
+            )
+        }
+        _ => (error_response(id, "unknown_sink"), None),
+    }
+}
+
 // -- Helpers --
 
 fn is_wrapper(state: &BrokerState, connection_id: ConnectionId) -> bool {
@@ -340,7 +413,7 @@ fn ok_response(id: u32) -> Message {
     }
 }
 
-fn error_response(id: u32, reason: &str) -> Message {
+pub(super) fn error_response(id: u32, reason: &str) -> Message {
     Message::Response {
         id,
         status: Status::Error,
@@ -700,14 +773,19 @@ mod tests {
                 ..
             }
         ));
-        let inject = inject.expect("paste should produce InjectAction");
-        assert_eq!(inject.target_connection, c1);
-        match inject.message {
-            Message::Inject { id, content } => {
-                assert_eq!(id, 0);
-                assert_eq!(content, b"turn data");
+        let effect = inject.expect("paste should produce SideEffect");
+        match effect {
+            SideEffect::Inject(action) => {
+                assert_eq!(action.target_connection, c1);
+                match action.message {
+                    Message::Inject { id, content } => {
+                        assert_eq!(id, 0);
+                        assert_eq!(content, b"turn data");
+                    }
+                    _ => panic!("expected Inject message"),
+                }
             }
-            _ => panic!("expected Inject"),
+            _ => panic!("expected SideEffect::Inject"),
         }
     }
 
@@ -1279,12 +1357,15 @@ mod tests {
                 ..
             }
         ));
-        let inject = inject.expect("paste should produce InjectAction");
-        match inject.message {
-            Message::Inject { content, .. } => {
-                assert_eq!(content, b"first");
-            }
-            _ => panic!("expected Inject"),
+        let effect = inject.expect("paste should produce SideEffect");
+        match effect {
+            SideEffect::Inject(action) => match action.message {
+                Message::Inject { content, .. } => {
+                    assert_eq!(content, b"first");
+                }
+                _ => panic!("expected Inject message"),
+            },
+            _ => panic!("expected SideEffect::Inject"),
         }
     }
 
@@ -1369,5 +1450,233 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    // -- Deliver --
+
+    /// Helper: set up wrapper + client + session with a captured turn.
+    fn setup_with_captured_turn() -> (BrokerState, ConnectionId, ConnectionId) {
+        let (mut s, c1) = fresh();
+        let c2 = ConnectionId::new();
+        handle_message(&mut s, hello(PROTOCOL_VERSION), c1);
+        handle_message(
+            &mut s,
+            Message::Hello {
+                id: 0,
+                version: PROTOCOL_VERSION,
+                role: Role::Client,
+            },
+            c2,
+        );
+        handle_message(&mut s, register(1, "s1", 100), c1);
+        handle_message(
+            &mut s,
+            Message::TurnCompleted {
+                id: 2,
+                session: "s1".into(),
+                content: b"turn data".to_vec(),
+                interrupted: false,
+                timestamp: 1000,
+            },
+            c1,
+        );
+        handle_message(
+            &mut s,
+            Message::Capture {
+                id: 3,
+                session: "s1".into(),
+            },
+            c2,
+        );
+        (s, c1, c2)
+    }
+
+    #[test]
+    fn deliver_inject_success() {
+        let (mut s, c1, c2) = setup_with_captured_turn();
+        let (resp, effect) = handle_message(
+            &mut s,
+            Message::Deliver {
+                id: 10,
+                sink: "inject".into(),
+                session: Some("s1".into()),
+                path: None,
+            },
+            c2,
+        );
+        assert!(matches!(
+            resp,
+            Message::Response {
+                status: Status::Ok,
+                ..
+            }
+        ));
+        match effect.expect("should produce SideEffect") {
+            SideEffect::Inject(action) => {
+                assert_eq!(action.target_connection, c1);
+                match action.message {
+                    Message::Inject { content, .. } => {
+                        assert_eq!(content, b"turn data");
+                    }
+                    _ => panic!("expected Inject message"),
+                }
+            }
+            _ => panic!("expected SideEffect::Inject"),
+        }
+    }
+
+    #[test]
+    fn deliver_inject_missing_session() {
+        let (mut s, _c1, c2) = setup_with_captured_turn();
+        let (resp, effect) = handle_message(
+            &mut s,
+            Message::Deliver {
+                id: 10,
+                sink: "inject".into(),
+                session: None,
+                path: None,
+            },
+            c2,
+        );
+        assert!(effect.is_none());
+        match resp {
+            Message::Response { error, .. } => {
+                assert_eq!(error.as_deref(), Some("missing_field"));
+            }
+            _ => panic!("expected Response"),
+        }
+    }
+
+    #[test]
+    fn deliver_clipboard_success() {
+        let (mut s, _c1, c2) = setup_with_captured_turn();
+        let (resp, effect) = handle_message(
+            &mut s,
+            Message::Deliver {
+                id: 10,
+                sink: "clipboard".into(),
+                session: None,
+                path: None,
+            },
+            c2,
+        );
+        assert!(matches!(
+            resp,
+            Message::Response {
+                status: Status::Ok,
+                ..
+            }
+        ));
+        match effect.expect("should produce SideEffect") {
+            SideEffect::Clipboard {
+                content,
+                request_id,
+            } => {
+                assert_eq!(content, b"turn data");
+                assert_eq!(request_id, 10);
+            }
+            _ => panic!("expected SideEffect::Clipboard"),
+        }
+    }
+
+    #[test]
+    fn deliver_clipboard_buffer_empty() {
+        let (mut s, c) = fresh();
+        handle_message(&mut s, hello(PROTOCOL_VERSION), c);
+        let (resp, effect) = handle_message(
+            &mut s,
+            Message::Deliver {
+                id: 10,
+                sink: "clipboard".into(),
+                session: None,
+                path: None,
+            },
+            c,
+        );
+        assert!(effect.is_none());
+        match resp {
+            Message::Response { error, .. } => {
+                assert_eq!(error.as_deref(), Some("buffer_empty"));
+            }
+            _ => panic!("expected Response"),
+        }
+    }
+
+    #[test]
+    fn deliver_file_success() {
+        let (mut s, _c1, c2) = setup_with_captured_turn();
+        let (resp, effect) = handle_message(
+            &mut s,
+            Message::Deliver {
+                id: 10,
+                sink: "file".into(),
+                session: None,
+                path: Some("/tmp/turn.txt".into()),
+            },
+            c2,
+        );
+        assert!(matches!(
+            resp,
+            Message::Response {
+                status: Status::Ok,
+                ..
+            }
+        ));
+        match effect.expect("should produce SideEffect") {
+            SideEffect::FileWrite {
+                path,
+                content,
+                request_id,
+            } => {
+                assert_eq!(path, "/tmp/turn.txt");
+                assert_eq!(content, b"turn data");
+                assert_eq!(request_id, 10);
+            }
+            _ => panic!("expected SideEffect::FileWrite"),
+        }
+    }
+
+    #[test]
+    fn deliver_file_missing_path() {
+        let (mut s, _c1, c2) = setup_with_captured_turn();
+        let (resp, effect) = handle_message(
+            &mut s,
+            Message::Deliver {
+                id: 10,
+                sink: "file".into(),
+                session: None,
+                path: None,
+            },
+            c2,
+        );
+        assert!(effect.is_none());
+        match resp {
+            Message::Response { error, .. } => {
+                assert_eq!(error.as_deref(), Some("missing_field"));
+            }
+            _ => panic!("expected Response"),
+        }
+    }
+
+    #[test]
+    fn deliver_unknown_sink() {
+        let (mut s, _c1, c2) = setup_with_captured_turn();
+        let (resp, effect) = handle_message(
+            &mut s,
+            Message::Deliver {
+                id: 10,
+                sink: "fax_machine".into(),
+                session: None,
+                path: None,
+            },
+            c2,
+        );
+        assert!(effect.is_none());
+        match resp {
+            Message::Response { error, .. } => {
+                assert_eq!(error.as_deref(), Some("unknown_sink"));
+            }
+            _ => panic!("expected Response"),
+        }
     }
 }

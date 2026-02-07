@@ -276,6 +276,12 @@ mod tests {
                 id: 9,
                 turn_id: "s1:2".into(),
             },
+            Message::Deliver {
+                id: 10,
+                sink: "clipboard".into(),
+                session: None,
+                path: None,
+            },
             Message::Response {
                 id: 1,
                 status: Status::Ok,

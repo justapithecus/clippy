@@ -206,6 +206,15 @@ impl BrokerState {
         Ok((content, entry.connection_id))
     }
 
+    /// Read a clone of the relay buffer content, if present.
+    ///
+    /// Used by non-inject sinks (clipboard, file) that need the
+    /// content without session routing. Returns `None` if no turn
+    /// has been captured yet.
+    pub fn relay_content(&self) -> Option<Vec<u8>> {
+        self.relay_buffer.as_ref().map(|r| r.content.clone())
+    }
+
     /// List all active sessions.
     ///
     /// Returns a descriptor for each session including whether it

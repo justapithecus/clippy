@@ -321,12 +321,13 @@ pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, P
     // -- Post-loop cleanup --
 
     // Flush any unterminated prompt.
+    const SHUTDOWN_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
     let events = turn_detector.flush_line();
     for event in events {
         if let TurnEvent::TurnCompleted(turn) = event {
             latest_turn = Some(turn.clone());
             if let Some(ref mut broker) = broker_client {
-                let _ = broker.send_turn(&turn).await;
+                let _ = time::timeout(SHUTDOWN_IO_TIMEOUT, broker.send_turn(&turn)).await;
             }
         }
     }
@@ -336,7 +337,7 @@ pub async fn run_session(pattern: String, command: Vec<String>) -> Result<i32, P
 
     // Deregister from broker.
     if let Some(ref mut broker) = broker_client {
-        broker.deregister().await;
+        let _ = time::timeout(SHUTDOWN_IO_TIMEOUT, broker.deregister()).await;
     }
 
     // Wait for child exit.

@@ -11,11 +11,9 @@ pub mod hotkey;
 pub mod session;
 pub mod x11;
 
-// ClipboardProvider wired into broker sink in PR 4.
-#[allow(unused_imports)]
 pub use clipboard::ClipboardProvider;
 pub use hotkey::{HotkeyEvent, HotkeyProvider, KeyBinding};
-// HotkeyRegistration used internally by HotkeyProvider impls.
+// Re-exported for use by HotkeyProvider implementations.
 #[allow(unused_imports)]
 pub use hotkey::HotkeyRegistration;
 pub use session::SessionResolver;
@@ -34,8 +32,6 @@ pub enum ResolverError {
     Hotkey(String),
 
     /// Clipboard operation failed (e.g. xclip not found, pipe error).
-    // Wired into broker sink in PR 4.
-    #[allow(dead_code)]
     #[error("clipboard: {0}")]
     Clipboard(String),
 }

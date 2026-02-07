@@ -29,6 +29,12 @@ use state::{BrokerState, ConnectionId};
 
 use crate::ipc::protocol::Message;
 
+/// Clipboard writer closure type — wraps a `ClipboardProvider::write()` call.
+///
+/// The broker accepts this as a boxed closure to stay structurally
+/// independent of resolver types.
+pub type ClipboardWriterFn = Box<dyn Fn(&[u8]) -> Result<(), String> + Send + Sync>;
+
 /// Broker startup/runtime errors.
 #[derive(Debug, thiserror::Error)]
 pub enum BrokerError {
@@ -63,7 +69,10 @@ pub enum BrokerError {
 /// - Stale socket detection and cleanup
 /// - SIGTERM/SIGINT → graceful shutdown, socket file removed
 /// - All state in-memory only (lost on exit)
-pub async fn run(config: state::RingConfig) -> Result<(), BrokerError> {
+pub async fn run(
+    config: state::RingConfig,
+    clipboard_writer: ClipboardWriterFn,
+) -> Result<(), BrokerError> {
     let socket_path = resolve_socket_path()?;
     let listener = bind_socket(&socket_path).await?;
 
@@ -118,7 +127,7 @@ pub async fn run(config: state::RingConfig) -> Result<(), BrokerError> {
                             }
                         }
                         SideEffect::Clipboard { content, metadata, request_id } => {
-                            if let Err(reason) = sink::deliver_clipboard(&content, &metadata).await {
+                            if let Err(reason) = sink::deliver_clipboard(&content, &metadata, &*clipboard_writer).await {
                                 response = handler::error_response(request_id, &reason);
                             }
                         }
@@ -306,6 +315,30 @@ mod tests {
                 HashMap::new();
             let mut state = BrokerState::new(state::RingConfig::default());
 
+            // Test clipboard writer — uses xclip like the real broker.
+            let clipboard_writer: ClipboardWriterFn = Box::new(|content| {
+                use std::io::Write;
+                use std::process::{Command, Stdio};
+                let mut child = Command::new("xclip")
+                    .args(["-selection", "clipboard"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .map_err(|_| "clipboard_failed".to_string())?;
+                if let Some(mut stdin) = child.stdin.take() {
+                    stdin
+                        .write_all(content)
+                        .map_err(|_| "clipboard_failed".to_string())?;
+                }
+                let status = child.wait().map_err(|_| "clipboard_failed".to_string())?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err("clipboard_failed".to_string())
+                }
+            });
+
             loop {
                 tokio::select! {
                     result = listener.accept() => {
@@ -333,7 +366,7 @@ mod tests {
                                     }
                                 }
                                 SideEffect::Clipboard { content, metadata, request_id } => {
-                                    if let Err(reason) = sink::deliver_clipboard(&content, &metadata).await {
+                                    if let Err(reason) = sink::deliver_clipboard(&content, &metadata, &*clipboard_writer).await {
                                         response = handler::error_response(request_id, &reason);
                                     }
                                 }

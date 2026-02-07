@@ -40,7 +40,16 @@ async fn main() {
                 depth,
                 max_turn_bytes: max_turn_size,
             };
-            if let Err(e) = broker::run(config).await {
+            // Construct clipboard writer closure from X11ClipboardProvider.
+            let clipboard = resolver::x11::clipboard::X11ClipboardProvider::new();
+            let clipboard_writer: broker::ClipboardWriterFn = Box::new(move |content| {
+                use resolver::ClipboardProvider;
+                clipboard
+                    .write(content)
+                    .map_err(|e| format!("clipboard_failed: {e}"))
+            });
+
+            if let Err(e) = broker::run(config, clipboard_writer).await {
                 tracing::error!(error = %e, "broker failed");
                 eprintln!("clippyctl broker: {e}");
                 std::process::exit(1);
